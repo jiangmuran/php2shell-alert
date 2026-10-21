@@ -1,0 +1,13 @@
+{
+  "name": "php2shell-alert",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bilingual advisory + benign exposure checker for CVE-2026-109618/109619 (php2shell). Deployed at https://php.muran.ai",
+  "scripts": {
+    "test": "node test/local.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "license": "MIT"
+}

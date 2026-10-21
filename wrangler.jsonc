@@ -1,0 +1,13 @@
+{
+  "$schema": "https://unpkg.com/wrangler/config-schema.json",
+  "name": "php2shell-alert",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    { "pattern": "php.muran.ai", "custom_domain": true }
+  ]
+}
