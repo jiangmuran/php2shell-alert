@@ -65,7 +65,9 @@ php -v
 sudo systemctl status php*-fpm
 
 # 公开端点是否泄露版本（关闭只是隐藏，不等于安全）
-curl -sI https://你的站点/ | grep -i -E 'x-powered-by|server'</code></pre></div>
+      <p class="fineprint" data-i18n="sv2_title"><strong>一键脚本</strong>（在服务器上运行，输出版本 + 全部关键风险设置）：</p>
+      <div class="codeblock"><pre><code>php -r '$f=["8.2"=&gt;"8.2.35","8.3"=&gt;"8.3.36","8.4"=&gt;"8.4.27","8.5"=&gt;"8.5.12"];$b=PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;$x=isset($f[$b])?version_compare(PHP_VERSION,$f[$b],"&lt;"):true;echo json_encode(["version"=&gt;PHP_VERSION,"sapi"=&gt;php_sapi_name(),"branch"=&gt;$b,"branch_fix"=&gt;$f[$b]??"none (EOL)","exposed"=&gt;$x,"upload_progress"=&gt;ini_get("session.upload_progress.enabled"),"strict_mode"=&gt;ini_get("session.use_strict_mode"),"memory_limit"=&gt;ini_get("memory_limit")],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES),"\n";'</code></pre></div>
+      <p class="fineprint" data-i18n="sv2_note"><code>exposed: true</code> 即受影响。upload_progress 为 1 时建议直接置 0 并重启 FPM（部分缓解）。FPM 站点请在池内配置中核对，CLI 结果可能与 web 不同。</p>
       <p class="fineprint" data-i18n="selfverify_note">判定规则：8.2.x&lt;8.2.35、8.3.x&lt;8.3.36、8.4.x&lt;8.4.27、8.5.x&lt;8.5.12 → 受影响；8.1 及更老 → 受影响且无官方修复。</p>
     </details>
   </div>

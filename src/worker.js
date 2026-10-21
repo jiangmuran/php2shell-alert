@@ -128,14 +128,6 @@ function collectSignals(headers, bodySnippet) {
   return { sig, phpVer };
 }
 
-// Tiny, well-formed multipart POST — indistinguishable from a normal small
-// browser file upload. No injection characters, no size, no OOM pressure.
-const BOUND = '----p2scheck7Y3k';
-function benignMultipart(sid) {
-  const part = (n, v) => `--${BOUND}\r\nContent-Disposition: form-data; name="${n}"\r\n\r\n${v}\r\n`;
-  const file = `--${BOUND}\r\nContent-Disposition: form-data; name="f"; filename="probe.txt"\r\nContent-Type: text/plain\r\n\r\np2s\r\n`;
-  return (part('PHPSESSID', sid) + part('PHP_SESSION_UPLOAD_PROGRESS', 'p2sprobe') + file + `--${BOUND}--\r\n`);
-}
 
 function looksLikeCloudflare(headers, body) {
   if (headers.get('cf-ray') || headers.get('cf-cache-status')) return true;
@@ -188,41 +180,57 @@ async function handleCheck(request, env) {
     out.probes.get = { status: get.status || 0, error: 'read_failed' };
   }
 
-  // Probe 2: benign multipart POST (session.upload_progress path touch).
-  // Prefer a real PHP endpoint found in the page over the raw root URL.
-  let postUrl = target.url.toString();
-  const phpLink = /(?:href|action)=["']([^"'\s]+\.php[^"'\s]*)["']/i.exec(bodySnippet);
-  if (phpLink) {
-    try { postUrl = new URL(phpLink[1], get.url).toString().slice(0, 300); } catch { /* keep root */ }
+  // Probe 2: session.use_strict_mode via cookie reflection (benign).
+  // Empirical note: the rfc1867 upload-progress session is INVISIBLE on the
+  // wire (no Set-Cookie ever) — that is exactly why it pre-initializes state
+  // without the app noticing — so session.upload_progress itself has NO
+  // remote benign oracle. We only probe strict_mode on session-carrying
+  // responses. Oracle (verified on PHP 8.2.34): replay the GET with our own
+  // freshly-invented sid — strict_mode=0 ADOPTS it silently (no PHPSESSID
+  // Set-Cookie in the response); strict_mode=1 regenerates and sends a fresh
+  // PHPSESSID cookie.
+  out.prereq = { uploadProgress: 'unknown-remote', strictMode: null };
+  const sessionOnGet = out.signals.some(s => s.kind === 'cookie');
+  if (sessionOnGet) {
+    const sid = 'p2s' + Math.random().toString(16).slice(2, 10).padEnd(8, '0') + Math.random().toString(16).slice(2, 10).padEnd(24, '0');
+    try {
+      const r2 = await timedFetch(get.url, {
+        ...getOpts,
+        headers: { ...getOpts.headers, cookie: 'PHPSESSID=' + sid },
+      }, 7000);
+      await r2.text();
+      const setc = r2.headers.get('set-cookie') || '';
+      const adopted = !/PHPSESSID/i.test(setc);
+      out.prereq.strictMode = adopted ? 0 : 1;
+      out.probes.strictMode = { status: r2.status, adopted };
+      if (adopted) {
+        out.signals.push({
+          kind: 'prereq',
+          name: 'session.use_strict_mode',
+          value: '0 — attacker-chosen session id adopted silently (fixation prerequisite of the public PoC chain)',
+        });
+      }
+    } catch { /* optional probe */ }
   }
-  const sid = 'p2s' + Math.random().toString(16).slice(2, 10).padEnd(8, '0') + Math.random().toString(16).slice(2, 10).padEnd(24, '0');
-  try {
-    const body = benignMultipart(sid);
-    const post = await timedFetch(postUrl, {
-      method: 'POST',
-      headers: {
-        'content-type': `multipart/form-data; boundary=${BOUND}`,
-        'user-agent': 'php2shell-alert/1.0 (+https://php.muran.ai; passive+benign checks only)',
-        'x-requested-with': 'p2s-benign-probe',
-      },
-      body,
-    });
-    const postBody = await post.text();
-    const setc = post.headers.get('set-cookie') || '';
-    const reflected = new RegExp('PHPSESSID=' + sid, 'i').test(setc);
-    const regenerated = /PHPSESSID=[a-z0-9,\-]{26,}/i.test(setc) && !reflected;
-    out.probes.multipart = { status: post.status };
-    out.waf.cloudflareBlockedMultipart = post.status === 403 && looksLikeCloudflare(post.headers, postBody);
-    out.waf.multipartBlockedAtOrigin = post.status === 403 && !out.waf.cloudflare;
-    if (reflected || regenerated) {
-      out.signals.push({
-        kind: 'session',
-        name: 'session.upload_progress',
-        value: reflected ? 'enabled — attacker-controlled session id accepted (use_strict_mode=0)' : 'responds with fresh PHP session on upload',
-      });
-    }
-  } catch (e) {
-    out.probes.multipart = { status: 0, error: e.name === 'AbortError' ? 'timeout' : 'fetch_failed' };
+  // upload_progress cannot be determined remotely; the server-side one-liner
+  // on the site is the only accurate channel (see /api/check disclaimer).
+
+  // Probe 3: /index.php — a static-looking homepage sometimes hides a live
+  // PHP entrypoint; a direct hit can expose the banner or a session cookie.
+  if (!out.phpVersion) {
+    try {
+      const idx = new URL('/index.php', get.url);
+      if (idx.toString() !== get.url) {
+        const r = await timedFetch(idx.toString(), getOpts, 6000);
+        const ib = await r.text();
+        const { sig, phpVer } = collectSignals(r.headers, ib.slice(0, 65536));
+        if (phpVer || sig.length) {
+          out.probes.indexPhp = { status: r.status };
+          out.signals.push(...sig.filter(s => s.kind !== 'app' || !out.signals.some(x => x.kind === 'app' && x.name === s.name)));
+          out.phpVersion = out.phpVersion || phpVer;
+        }
+      }
+    } catch { /* optional probe */ }
   }
 
   // ---------- verdict ----------

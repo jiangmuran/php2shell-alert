@@ -31,12 +31,20 @@ const eol = await serve(18103, (req, res) => {
   res.writeHead(200, { 'X-Powered-By': 'PHP/7.4.33' }); res.end(app('home'));
 });
 const hidden = await serve(18104, (req, res) => {
-  const isMultipart = /multipart/.test(req.headers['content-type'] || '');
-  const head = isMultipart ? { 'Set-Cookie': 'PHPSESSID=p2srobinhood0000000000000000000' } : {};
-  res.writeHead(200, head); res.end(app('wp-content/themes/x/style.css'));
+  // Mimics real PHP with strict_mode=0: an incoming PHPSESSID is adopted
+  // SILENTLY (no Set-Cookie); only cookieless visitors get a new session id.
+  if (/PHPSESSID=[a-z0-9,\-]{26,}/i.test(req.headers.cookie || '')) {
+    res.writeHead(200); res.end(app('wp-content/themes/x/style.css')); return;
+  }
+  res.writeHead(200, { 'Set-Cookie': 'PHPSESSID=freshsessionid0000000000000000; path=/' });
+  res.end(app('wp-content/themes/x/style.css'));
 });
 const wpBody = await serve(18105, (req, res) => {
   res.writeHead(200, { Server: 'Apache' }); res.end(app('wp-content'));
+});
+const idxOnly = await serve(18107, (req, res) => {
+  if (req.url === '/index.php') { res.writeHead(200, { 'X-Powered-By': 'PHP/8.4.26' }); res.end(app('app')); }
+  else { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(app('static landing page')); }
 });
 const future = await serve(18106, (req, res) => {
   res.writeHead(200, { 'X-Powered-By': 'PHP/8.5.12' }); res.end(app('home'));
@@ -73,14 +81,23 @@ await T('patched 8.5.12 → patched', async () => {
   const d = await check('http://127.0.0.1:18106');
   assert.equal(d.verdict.status, 'patched');
 });
-await T('hidden version + session response → php_version_hidden', async () => {
+await T('session site, hidden version → strict_mode 0 reflected', async () => {
   const d = await check('http://127.0.0.1:18104');
   assert.equal(d.verdict.status, 'php_version_hidden');
-  assert.ok(d.signals.some(s => s.kind === 'session' || s.kind === 'app'));
+  assert.equal(d.prereq.strictMode, 0);
+  assert.equal(d.prereq.uploadProgress, 'unknown-remote');
+  assert.ok(d.signals.some(s => s.name === 'session.use_strict_mode'));
 });
-await T('WordPress fingerprint only → php_version_hidden', async () => {
+await T('app fingerprint, no session cookie → prereq unknown, still php_version_hidden', async () => {
   const d = await check('http://127.0.0.1:18105');
   assert.equal(d.verdict.status, 'php_version_hidden');
+  assert.equal(d.prereq.uploadProgress, 'unknown-remote');
+  assert.equal(d.prereq.strictMode, null);
+});
+await T('static root but live /index.php → version found via probe 3', async () => {
+  const d = await check('http://127.0.0.1:18107');
+  assert.equal(d.verdict.status, 'vulnerable');
+  assert.equal(d.verdict.fixedIn, '8.4.27');
 });
 await T('unreachable → unreachable verdict', async () => {
   const d = await check('http://127.0.0.1:18999');
@@ -110,7 +127,7 @@ await T('i18n: every data-i18n key in HTML exists in both dicts', async () => {
   }
 });
 
-[vuln, patched, eol, hidden, wpBody, future].forEach(s => s.close());
+[vuln, patched, eol, hidden, wpBody, idxOnly, future].forEach(s => s.close());
 let fails = results.filter(r => r[0] === 'FAIL').length;
 for (const [st, name] of results) console.log(`${st === 'PASS' ? '✓' : '✗'} ${name}`);
 console.log(`\n${results.length - fails}/${results.length} passed`);
